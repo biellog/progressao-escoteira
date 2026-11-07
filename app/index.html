@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Progressão Escoteira</title>
+  <meta name="description" content="Acompanhe a progressão do Ramo Escoteiro: escoteiros, monitores e chefes." />
+  <meta name="theme-color" content="#0d1117" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <script>
+    // aplica tema/fonte antes de desenhar (evita "piscar" claro)
+    try {
+      var c = JSON.parse(localStorage.getItem('pe_prefs') || '{}');
+      document.documentElement.dataset.theme = c.tema || 'dark';
+      if (c.fonte) document.documentElement.dataset.fonte = c.fonte;
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <!-- Tela de carregamento -->
+  <div id="tela-carregando" class="tela-centro"><div class="spinner" aria-label="Carregando"></div></div>
+
+  <!-- Login / Cadastro -->
+  <section id="tela-auth" class="tela-centro" hidden>
+    <div class="cartao-auth">
+      <div class="marca">
+        <img src="icons/icon.svg" alt="" />
+        <div><h1>Progressão Escoteira</h1><p>Ramo Escoteiro · 2026</p></div>
+      </div>
+      <div class="abas" role="tablist">
+        <button role="tab" id="aba-entrar" aria-selected="true">Entrar</button>
+        <button role="tab" id="aba-cadastrar" aria-selected="false">Criar conta</button>
+      </div>
+      <div id="auth-msg" hidden></div>
+
+      <form id="form-entrar" autocomplete="on">
+        <label class="campo"><span>E-mail</span><input class="input" type="email" name="email" required autocomplete="email" placeholder="voce@email.com" /></label>
+        <label class="campo"><span>Senha</span><input class="input" type="password" name="senha" required autocomplete="current-password" /></label>
+        <button class="btn btn-primary btn-block" type="submit">Entrar</button>
+      </form>
+
+      <form id="form-cadastrar" hidden autocomplete="on">
+        <label class="campo"><span>Nome completo</span><input class="input" name="nome" required autocomplete="name" /></label>
+        <label class="campo"><span>E-mail</span><input class="input" type="email" name="email" required autocomplete="email" /></label>
+        <label class="campo"><span>Senha</span><input class="input" type="password" name="senha" required minlength="6" autocomplete="new-password" /><small>Mínimo de 6 caracteres.</small></label>
+        <label class="campo"><span>🔐 Código de entrada</span>
+          <input class="input input-codigo" name="codigo" required autocomplete="off" placeholder="EX: K7P2QD" />
+          <small>Escoteiro: peça o código da sua patrulha ao chefe. Chefe: use o seu código de chefe.</small>
+        </label>
+        <button class="btn btn-primary btn-block" type="submit">Criar conta</button>
+      </form>
+
+      <p class="pequeno muted" style="text-align:center;margin:1.1rem 0 0"><span class="selo-modo" id="selo-modo"></span></p>
+    </div>
+  </section>
+
+  <!-- Bloqueio por PIN -->
+  <section id="tela-pin" class="tela-centro" hidden>
+    <div class="cartao-auth" style="text-align:center">
+      <div style="font-size:2.4rem">🔒</div>
+      <h1 style="font-size:1.25rem;margin-top:.4rem">Digite seu PIN</h1>
+      <p class="muted pequeno" id="pin-msg">Código de segurança deste aparelho</p>
+      <div class="pin-pontos" id="pin-pontos"></div>
+      <div class="teclado" id="teclado"></div>
+      <button class="btn btn-ghost btn-sm" id="pin-esqueci" style="margin-top:1rem">Esqueci o PIN (sair da conta)</button>
+    </div>
+  </section>
+
+  <!-- Aplicativo -->
+  <div id="shell" class="shell" hidden>
+    <aside class="sidebar" id="sidebar" aria-label="Menu">
+      <div class="marca"><img src="icons/icon.svg" alt="" /><div><h1>Progressão</h1><p>Ramo Escoteiro</p></div></div>
+      <div class="usuario" id="cartao-usuario"></div>
+      <nav class="nav" id="nav"></nav>
+      <div class="sidebar-rodape">
+        <button class="btn btn-sm" id="btn-sair">↩ Sair</button>
+        <div class="versao" id="versao-app"></div>
+      </div>
+    </aside>
+    <div class="fundo-menu" id="fundo-menu"></div>
+    <div class="principal">
+      <header class="topo">
+        <button class="btn-menu" id="btn-menu" aria-label="Abrir menu">☰</button>
+        <h2 id="titulo-view">Minha Progressão</h2>
+        <span class="selo-modo" id="selo-modo-topo"></span>
+      </header>
+      <main class="view" id="view"></main>
+    </div>
+  </div>
+
+  <!-- Banner: nova versão -->
+  <div class="banner-atualizacao" id="banner-atualizacao" role="alert" hidden>
+    <div class="sino">🔔</div>
+    <div>
+      <b id="banner-titulo">Nova versão disponível!</b>
+      <p>Atualize agora — seus dados continuam salvos.</p>
+      <ul id="banner-novidades"></ul>
+    </div>
+    <div class="acoes">
+      <button class="btn btn-primary btn-sm" id="btn-atualizar">Atualizar agora</button>
+      <button class="btn btn-ghost btn-sm" id="btn-depois">Depois</button>
+    </div>
+  </div>
+
+  <button class="btn btn-primary btn-instalar" id="btn-instalar" hidden>📲 Instalar aplicativo</button>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <dialog class="modal" id="modal"></dialog>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+name: Publicar no GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Carimba o service worker com o id do commit: cada publicação vira uma
+      # "nova versão" e o app mostra o aviso para atualizar.
+      - name: Carimbar build
+        run: |
+          mkdir -p _site
+          cp -r index.html site changelog.json app _site/
+          sed -i "s/__BUILD__/${GITHUB_SHA::7}/" _site/app/sw.js
+          touch _site/.nojekyll
+
+      # Credenciais do Supabase vêm dos "secrets/variables" do repositório (opcional)
+      - name: Configurar Supabase
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_ANON_KEY" ]; then
+            sed -i "s|SUPABASE_URL: ''|SUPABASE_URL: '$SUPABASE_URL'|; s|SUPABASE_ANON_KEY: ''|SUPABASE_ANON_KEY: '$SUPABASE_ANON_KEY'|" _site/app/js/config.js
+            echo "Modo nuvem ativado"
+          else
+            echo "Sem Supabase configurado: app em modo local"
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
