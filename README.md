@@ -97,7 +97,27 @@ python3 -m http.server 8000
 Abra <http://localhost:8000/> (site) ou <http://localhost:8000/app/> (app).
 No modo local, o chefe de teste é `chefe@gmail.com` com o código `CHEFE-2026` (em `app/js/config.js`).
 
-## 5. Quero um APK (Android)
+## 5. APK para Android
 
-O app já instala direto pelo navegador. Se quiser um arquivo `.apk` para distribuir, depois de publicar
-abra <https://www.pwabuilder.com>, cole o endereço do app (`.../app/`) e gere o pacote Android.
+O APK é gerado **automaticamente pelo GitHub Actions** (workflow `Gerar APK Android`) sempre que a
+versão muda (`app/version.json`), e publicado na página **Releases**. Link fixo para a versão mais recente:
+
+`https://github.com/biellog/progressao-escoteira/releases/latest/download/progressao-escoteira.apk`
+
+- O APK é uma casca Android ([Capacitor](https://capacitorjs.com), pasta `android/`) que abre o app
+  publicado no GitHub Pages. Por isso ele **se atualiza sozinho** com o aviso "Nova versão disponível" —
+  não é preciso baixar um APK novo a cada mudança.
+- Para gerar manualmente: aba **Actions → Gerar APK Android → Run workflow**.
+
+### Chave de assinatura (importante)
+O Android só aceita atualizar um APK se ele for assinado com a **mesma chave**. Cadastre em
+**Settings → Secrets and variables → Actions → Secrets**:
+
+| Secret | Conteúdo |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | arquivo `.jks` em base64 (`base64 -w0 progressao.jks`) |
+| `ANDROID_KEYSTORE_PASSWORD` | senha do arquivo `.jks` |
+
+Para criar uma chave nova: `keytool -genkeypair -keystore progressao.jks -alias progressao -keyalg RSA -keysize 2048 -validity 10000`.
+Guarde o `.jks` e a senha em lugar seguro — **nunca** faça commit deles. Sem esses secrets o workflow
+usa uma chave temporária (funciona, mas cada APK novo exigirá desinstalar o anterior).

@@ -1,0 +1,98 @@
+name: Gerar APK Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/version.json'
+      - 'app/icons/**'
+      - 'android/package.json'
+      - 'android/capacitor.config.json'
+      - 'android/preparar.sh'
+      - 'android/www/**'
+      - '.github/workflows/apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Ler versão
+        id: v
+        run: |
+          echo "versao=$(jq -r .versao app/version.json)" >> "$GITHUB_OUTPUT"
+          {
+            echo "notas<<FIM"
+            jq -r '.novidades[] | "- " + .' app/version.json
+            echo "FIM"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Instalar ImageMagick
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick
+
+      - name: Preparar projeto Android (Capacitor)
+        run: bash android/preparar.sh "${{ steps.v.outputs.versao }}" "${{ github.run_number }}"
+
+      - name: Compilar APK
+        working-directory: android/android
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Assinar APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > chave.jks
+          else
+            echo "::warning::Secrets ANDROID_KEYSTORE_BASE64/ANDROID_KEYSTORE_PASSWORD não configurados. Usando chave temporária: quem instalar este APK precisará desinstalar antes de instalar uma versão futura."
+            export KEYSTORE_PASSWORD=temporaria123
+            keytool -genkeypair -keystore chave.jks -alias progressao -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$KEYSTORE_PASSWORD" -keypass "$KEYSTORE_PASSWORD" -dname "CN=Progressao Escoteira, C=BR"
+          fi
+          "$BT/zipalign" -p -f 4 android/android/app/build/outputs/apk/release/app-release-unsigned.apk alinhado.apk
+          "$BT/apksigner" sign --ks chave.jks --ks-key-alias progressao --ks-pass env:KEYSTORE_PASSWORD \
+            --out progressao-escoteira.apk alinhado.apk
+          "$BT/apksigner" verify --print-certs progressao-escoteira.apk
+          rm -f chave.jks
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: progressao-escoteira-apk
+          path: progressao-escoteira.apk
+
+      - name: Publicar na página de Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.versao }}
+          name: Progressão Escoteira v${{ steps.v.outputs.versao }}
+          make_latest: true
+          files: progressao-escoteira.apk
+          body: |
+            📲 **Baixe o arquivo `progressao-escoteira.apk` abaixo e abra no celular Android.**
+            (Se pedir, permita "instalar apps de fontes desconhecidas".)
+
+            **Novidades**
+            ${{ steps.v.outputs.notas }}
+
+            O aplicativo se atualiza sozinho pela internet: quando houver novidade, aparece o aviso
+            "Nova versão disponível". Seus dados nunca são apagados.

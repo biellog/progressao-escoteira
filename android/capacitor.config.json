@@ -1,0 +1,14 @@
+{
+  "appId": "io.github.biellog.progressaoescoteira",
+  "appName": "Progressão Escoteira",
+  "webDir": "www",
+  "backgroundColor": "#0d1117",
+  "server": {
+    "url": "https://biellog.github.io/progressao-escoteira/app/",
+    "androidScheme": "https",
+    "errorPath": "offline.html"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}
