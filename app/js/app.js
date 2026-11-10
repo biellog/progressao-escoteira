@@ -1,6 +1,7 @@
 import { CONFIG } from './config.js';
-import { db, ErroApp } from './db.js';
-import { EIXOS, ACOLHIDA, ACOLHIDA_ITENS, NUM_EXTENSO, itemVisivel, statusBloco, resumoGeral } from './data.js';
+import { db, ErroApp, LIMITE_ARQUIVO_MB, MAX_ARQUIVOS } from './db.js';
+import { EIXOS, ACOLHIDA, ACOLHIDA_ITENS, NUM_EXTENSO, itemVisivel, statusBloco, resumoGeral,
+  tipoEnvio, itemPorId, ITENS_COM_ENVIO, ESPECIALIDADES, INSIGNIAS } from './data.js';
 import { iniciarAtualizacoes, aplicarAtualizacao, verificarAgora, infoVersao, pedirPermissaoNotificacao } from './update.js';
 
 /* ------------------------------------------------------------ utilidades */
@@ -56,11 +57,19 @@ const S = {
   abertos: new Set(),
   meuProgresso: {},
   monitor: { patrulhaId: null, alvo: null, progresso: {} },
+  envios: {},            // item_id → envio mais recente (da pessoa cuja progressão está na tela)
+  proprio: true,         // a progressão na tela é a do usuário logado?
+  pendentes: 0,          // envios aguardando minha avaliação
+  filtroAval: 'pendente',
 };
+const ehAvaliador = () => S.eu?.ehMonitor || S.eu?.papel === 'chefe';
 
 const VIEWS = {
   progresso: { titulo: 'Minha Progressão', ico: '📘', render: viewProgresso },
   monitor:   { titulo: 'Painel do Monitor', ico: '🧑‍🤝‍🧑', render: viewMonitor, se: () => S.eu.ehMonitor || S.eu.papel === 'chefe' },
+  especialidades: { titulo: 'Especialidades', ico: '🎖️', render: (el) => viewEnvios(el, 'especialidade') },
+  insignias: { titulo: 'Insígnias', ico: '🏅', render: (el) => viewEnvios(el, 'insignia') },
+  avaliacoes: { titulo: 'Avaliações', ico: '✅', render: viewAvaliacoes, se: ehAvaliador },
   patrulhas: { titulo: 'Patrulhas', ico: '🏕️', render: viewPatrulhas, se: () => S.eu.papel === 'chefe' },
   conta:     { titulo: 'Minha Conta', ico: '👤', render: viewConta },
   config:    { titulo: 'Configurações', ico: '⚙️', render: viewConfig },
@@ -135,7 +144,7 @@ function pedirPin() {
     $('#teclado').onclick = (e) => { const k = e.target.closest('button')?.dataset.k; if (k) tecla(k); };
     $('#pin-esqueci').onclick = async () => {
       document.removeEventListener('keydown', teclado);
-      localStorage.removeItem(PIN_CHAVE); await db.sair(); S.eu = null; mostrar('tela-auth'); resolver(false);
+      localStorage.removeItem(PIN_CHAVE); pararNotificacoes(); await db.sair(); S.eu = null; mostrar('tela-auth'); resolver(false);
     };
   });
 }
@@ -155,6 +164,7 @@ async function entrarNoApp() {
   if (S.eu.papel === 'chefe' && S.view === 'progresso') S.view = 'patrulhas';
   const v = VIEWS[S.view]; if (v.se && !v.se()) S.view = 'progresso';
   await irPara(S.view);
+  iniciarNotificacoes();
 }
 
 function papelTexto(p) {
@@ -166,12 +176,12 @@ function papelTexto(p) {
 function desenharSidebar() {
   $('#cartao-usuario').innerHTML = `<div class="avatar">${h(iniciais(S.eu.nome))}</div>
     <div><b>${h(S.eu.nome)}</b><small>${papelTexto(S.eu)}</small></div>`;
-  const item = (id) => `<button data-view="${id}" ${S.view === id ? 'aria-current="page"' : ''}><span class="ico">${VIEWS[id].ico}</span>${VIEWS[id].titulo}</button>`;
+  const item = (id, badge = 0) => `<button data-view="${id}" ${S.view === id ? 'aria-current="page"' : ''}><span class="ico">${VIEWS[id].ico}</span>${VIEWS[id].titulo}${badge ? `<span class="nav-badge" aria-label="${badge} pendentes">${badge}</span>` : ''}</button>`;
   const pode = (id) => !VIEWS[id].se || VIEWS[id].se();
   $('#nav').innerHTML = `
     <div class="nav-titulo">Progressão</div>
-    ${item('progresso')}
-    ${pode('monitor') ? item('monitor') : ''}
+    ${item('progresso')}${item('especialidades')}${item('insignias')}
+    ${pode('monitor') ? `<div class="nav-titulo">${S.eu.papel === 'chefe' ? 'Chefia' : 'Monitor'}</div>${item('monitor')}${item('avaliacoes', S.pendentes)}` : ''}
     ${pode('patrulhas') ? item('patrulhas') : ''}
     <div class="nav-titulo">Ajustes</div>
     ${item('conta')}${item('config')}`;
@@ -190,14 +200,32 @@ async function irPara(view) {
 }
 
 /* ================================================== RENDER DE PROGRESSÃO */
+const NOME_TIPO = { especialidade: 'especialidade', insignia: 'insígnia', ambos: 'especialidade ou insígnia' };
+const ICO_TIPO = { especialidade: '🎖️', insignia: '🏅' };
+
+function htmlStatusEnvio(item, p) {
+  const tipo = tipoEnvio(item); if (!tipo) return '';
+  const e = S.envios[item.id];
+  const nomeEnvio = e ? `${ICO_TIPO[e.tipo]} ${h(e.nome)}${e.nivel ? ` (nível ${e.nivel})` : ''}` : '';
+  if (p) return e?.status === 'aprovado' ? `<button type="button" class="envio-status ok" data-abrir-envio="${item.id}">${nomeEnvio}</button>` : '';
+  if (e?.status === 'pendente') return `<button type="button" class="envio-status pendente" data-abrir-envio="${item.id}">⏳ Aguardando avaliação do monitor · ${nomeEnvio}</button>`;
+  if (e?.status === 'recusado') return `<button type="button" class="envio-status recusado" data-abrir-envio="${item.id}">✖ Recusado${e.comentario ? `: “${h(e.comentario)}”` : ''} · ${S.proprio ? 'toque para enviar de novo' : 'aguardando novo envio'}</button>`;
+  return S.proprio
+    ? `<button type="button" class="envio-status" data-abrir-envio="${item.id}">📎 Envie o relatório da ${NOME_TIPO[tipo]} para marcar</button>`
+    : `<span class="envio-status">📎 Aguardando o envio do relatório</span>`;
+}
+
 function htmlItem(item, prog, editavel, num) {
   const p = prog[item.id];
+  const comEnvio = !!tipoEnvio(item);
   const tag = item.m ? `<span class="tag-mod ${item.m}">${item.m === 'ar' ? '✈ Ar' : '⛵ Mar'}</span>` : '';
   const por = p?.por ? `<span class="por">✔ validado por ${h(p.por)}</span>` : '';
+  const dataEditavel = editavel && !(comEnvio && S.proprio);
   return `<div class="item ${p ? 'feito' : ''} ${item.esp ? 'esp' : ''} ${num === 'OU' ? 'ou' : ''}" data-id="${item.id}">
     <label><input type="checkbox" class="check" data-item="${item.id}" ${p ? 'checked' : ''} ${editavel ? '' : 'disabled'} aria-label="Concluído">
     <span class="txt"><span class="num">${num}</span>${h(item.t)}${tag}${por}</span></label>
-    ${p ? `<input type="date" class="data" data-data="${item.id}" value="${h(p.data)}" ${editavel ? '' : 'disabled'} aria-label="Data">` : '<span></span>'}
+    ${p ? `<input type="date" class="data" data-data="${item.id}" value="${h(p.data)}" ${dataEditavel ? '' : 'disabled'} aria-label="Data">` : '<span></span>'}
+    ${comEnvio ? `<div class="item-envio">${htmlStatusEnvio(item, p)}</div>` : ''}
   </div>`;
 }
 
@@ -270,6 +298,8 @@ function ligarProgressao(el, { userId, prog, mod, editavel, redesenhar }) {
   el.addEventListener('click', (e) => {
     const f = e.target.closest('[data-filtro]');
     if (f) { S.filtro = f.dataset.filtro; redesenhar(); }
+    const a = e.target.closest('[data-abrir-envio]');
+    if (a) { e.preventDefault(); acaoItemEnvio(a.dataset.abrirEnvio, prog, redesenhar); }
   });
   if (!editavel) return;
   const salvar = async (itemId, data) => {
@@ -279,8 +309,20 @@ function ligarProgressao(el, { userId, prog, mod, editavel, redesenhar }) {
     try { await db.setItem(userId, itemId, data); }
     catch (err) { if (antes) prog[itemId] = antes; else delete prog[itemId]; atualizarParcial(el, itemId, prog, mod, editavel); erro(err); }
   };
-  el.addEventListener('change', (e) => {
+  el.addEventListener('change', async (e) => {
     const t = e.target;
+    const id = t.dataset.item;
+    if (id && tipoEnvio(itemPorId(id))) {
+      // itens de especialidade/insígnia: só com relatório + aprovação
+      if (!t.checked && !S.proprio) {
+        t.checked = true;
+        if (await confirmar('Desmarcar este item?', 'O item volta a ficar pendente. O envio aprovado continua no histórico.', 'Desmarcar', true)) salvar(id, null);
+        return;
+      }
+      t.checked = !!prog[id];
+      acaoItemEnvio(id, prog, redesenhar);
+      return;
+    }
     if (t.dataset.item) salvar(t.dataset.item, t.checked ? (prog[t.dataset.item]?.data || hoje()) : null);
     else if (t.dataset.data && t.value) salvar(t.dataset.data, t.value);
   });
@@ -314,7 +356,8 @@ function atualizarParcial(el, itemId, prog, mod, editavel) {
 
 /* ========================================================= VIEW: PROGRESSO */
 async function viewProgresso(el) {
-  S.meuProgresso = await db.getProgresso(S.eu.id);
+  const [prog, envs] = await Promise.all([db.getProgresso(S.eu.id), db.listarEnvios({ userId: S.eu.id })]);
+  S.meuProgresso = prog; S.envios = mapaEnvios(envs); S.proprio = true;
   const mod = S.eu.modalidade || 'basica';
   const semPatrulha = S.eu.papel !== 'chefe' && !S.eu.patrulha_id;
   const desenhar = () => {
@@ -322,7 +365,11 @@ async function viewProgresso(el) {
       + htmlProgressao(S.meuProgresso, mod, true);
   };
   desenhar();
-  ligarProgressao(el, { userId: S.eu.id, prog: S.meuProgresso, mod, editavel: true, redesenhar: desenhar });
+  ligarProgressao(el, { userId: S.eu.id, prog: S.meuProgresso, mod, editavel: true,
+    redesenhar: async (recarregar) => {
+      if (recarregar === true) { S.envios = mapaEnvios(await db.listarEnvios({ userId: S.eu.id })); Object.assign(S.meuProgresso, await db.getProgresso(S.eu.id)); }
+      desenhar();
+    } });
 }
 
 /* =========================================================== VIEW: MONITOR */
@@ -343,6 +390,8 @@ async function viewMonitor(el) {
   const progs = await db.progressoDeVarios(membros.map((m) => m.id));
   const resumos = Object.fromEntries(membros.map((m) => [m.id, resumoGeral(progs[m.id] || {}, m.modalidade || 'basica')]));
   const media = membros.length ? Math.round(membros.reduce((a, m) => a + resumos[m.id].pct, 0) / membros.length) : 0;
+  const pend = {};
+  (await db.listarEnvios({ status: 'pendente' })).forEach((e) => { pend[e.user_id] = (pend[e.user_id] || 0) + 1; });
 
   el.innerHTML = `
     <div class="card">
@@ -357,7 +406,8 @@ async function viewMonitor(el) {
       return `<button class="card membro" data-membro="${m.id}">
         <div class="membro-topo"><div class="avatar">${h(iniciais(m.nome))}</div><div><b>${h(m.nome)}</b>${papelTexto(m)}</div><span class="pct-grande">${r.pct}%</span></div>
         <div class="barra"><i style="width:${r.pct}%"></i></div>
-        <div class="muted pequeno" style="margin-top:.5rem">Acolhida ${r.acOk}/${r.acTotal} · Blocos ${r.completos}/${r.blocos}</div>
+        <div class="muted pequeno" style="margin-top:.5rem">Acolhida ${r.acOk}/${r.acTotal} · Blocos ${r.completos}/${r.blocos}
+          ${pend[m.id] ? `<span class="badge pendente">⏳ ${pend[m.id]} para avaliar</span>` : ''}</div>
         <div class="mini-eixos">${EIXOS.map((e, i) => `<div>${e.icone}<div class="barra" style="--cor:${e.cor}"><i style="width:${r.porEixo[i].pct}%"></i></div></div>`).join('')}</div>
       </button>`;
     }).join('')}</div>
@@ -377,16 +427,353 @@ async function viewMonitor(el) {
 async function viewMembro(el, pt) {
   const m = S.monitor.alvo;
   const prog = S.monitor.progresso = await db.getProgresso(m.id);
+  let envs = await db.listarEnvios({ userId: m.id });
+  S.envios = mapaEnvios(envs); S.proprio = m.id === S.eu.id;
   const mod = m.modalidade || 'basica';
   const novo = el;
   const cab = `<div class="card" style="margin-bottom:14px"><div class="card-titulo" style="margin:0">
       <div class="membro-topo" style="margin:0"><div class="avatar">${h(iniciais(m.nome))}</div><div><b>${h(m.nome)}</b><span class="muted pequeno">Patrulha ${h(pt.nome)} · ${papelTexto(m)}</span></div></div>
       <button class="btn btn-sm" id="btn-voltar">← Voltar à patrulha</button></div>
       <p class="muted pequeno" style="margin:.6rem 0 0">Como ${S.eu.papel === 'chefe' ? 'chefe' : 'monitor'}, você pode marcar e datar os itens deste membro.</p></div>`;
-  const desenhar = () => { novo.innerHTML = cab + htmlProgressao(prog, mod, true); $('#btn-voltar', novo).onclick = () => { S.monitor.alvo = null; irPara('monitor'); }; };
+  const htmlEnviosMembro = () => {
+    const pend = envs.filter((e) => e.status === 'pendente');
+    if (!envs.length) return '';
+    return `<details class="secao" data-secao="envios-membro" ${pend.length ? 'open' : ''} style="--cor:#f5b74f">
+      <summary><span class="ico-eixo">🎖️</span><div><h3>Especialidades e insígnias</h3><span class="muted pequeno">${pend.length ? `⏳ ${pend.length} aguardando avaliação · ` : ''}${envs.length} envio(s)</span></div><span class="seta">▾</span></summary>
+      <div class="secao-corpo" id="lista-envios-membro">${envs.map((e) => htmlEnvio(e, { avaliar: !S.proprio })).join('')}</div></details>`;
+  };
+  const desenhar = () => {
+    novo.innerHTML = cab + htmlEnviosMembro() + htmlProgressao(prog, mod, true);
+    $('#btn-voltar', novo).onclick = () => { S.monitor.alvo = null; irPara('monitor'); };
+    const lista = $('#lista-envios-membro', novo);
+    if (lista) carregarMiniaturas(lista, envs);
+  };
+  const recarregar = async () => {
+    envs = await db.listarEnvios({ userId: m.id }); S.envios = mapaEnvios(envs);
+    Object.keys(prog).forEach((k) => delete prog[k]); Object.assign(prog, await db.getProgresso(m.id));
+    desenhar(); verificarNotificacoes();
+  };
   desenhar();
-  ligarProgressao(novo, { userId: m.id, prog, mod, editavel: true, redesenhar: desenhar });
+  ligarEnvios(novo, () => envs, recarregar);
+  ligarProgressao(novo, { userId: m.id, prog, mod, editavel: true, redesenhar: (r) => (r === true ? recarregar() : desenhar()) });
 }
+
+/* ============================================ ESPECIALIDADES E INSÍGNIAS */
+const STATUS_ENVIO = {
+  pendente: { txt: '⏳ Aguardando avaliação', cls: 'pendente' },
+  aprovado: { txt: '✔ Aprovado', cls: 'ok' },
+  recusado: { txt: '✖ Recusado', cls: 'recusado' },
+};
+const fmtTamanho = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB');
+const icoArquivo = (t = '') => (t.startsWith('image/') ? '🖼️' : t === 'application/pdf' ? '📄' : t.startsWith('video/') ? '🎬' : '📎');
+const fmtDataHora = (iso) => (iso ? new Date(iso).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '');
+
+/** item_id → envio mais recente (lista já vem do mais novo para o mais antigo) */
+function mapaEnvios(lista) {
+  const m = {};
+  lista.forEach((e) => { if (e.item_id && !m[e.item_id]) m[e.item_id] = e; });
+  return m;
+}
+
+function htmlEnvio(e, { avaliar = false } = {}) {
+  const st = STATUS_ENVIO[e.status];
+  const item = e.item_id ? itemPorId(e.item_id) : null;
+  const meu = e.user_id === S.eu.id;
+  return `<article class="card envio" data-envio="${e.id}">
+    <div class="envio-topo">
+      <div class="envio-ico">${ICO_TIPO[e.tipo]}</div>
+      <div class="envio-titulo">
+        <b>${h(e.nome)}</b>
+        <span class="muted pequeno">${e.tipo === 'insignia' ? 'Insígnia' : 'Especialidade'}${e.nivel ? ` · nível ${e.nivel}` : ''}${meu ? '' : ` · enviado por <b>${h(e.autor)}</b>`} · ${fmtDataHora(e.criado_em)}</span>
+      </div>
+      <span class="badge ${st.cls}">${st.txt}</span>
+    </div>
+    ${item ? `<p class="envio-item">🔗 Conta para: <b>${h(item.bloco)}</b><br><span class="muted">${h(item.t.length > 140 ? item.t.slice(0, 140) + '…' : item.t)}</span></p>` : ''}
+    ${e.relatorio ? `<p class="envio-relatorio">${h(e.relatorio)}</p>` : ''}
+    <div class="arquivos">${e.arquivos.map((a, i) => `<button type="button" class="arquivo" data-arquivo="${i}" title="Abrir ${h(a.nome)}">
+      ${a.tipo?.startsWith('image/') ? `<img alt="" data-thumb="${i}">` : `<span class="arq-ico">${icoArquivo(a.tipo)}</span>`}
+      <span class="arq-nome">${h(a.nome)}</span><span class="arq-tam">${fmtTamanho(a.tamanho)}</span></button>`).join('')}</div>
+    ${e.status !== 'pendente' ? `<p class="envio-avaliacao ${st.cls}">${e.status === 'aprovado' ? '✔ Aprovado' : '✖ Recusado'} por ${h(e.avaliado_por_nome || '—')} em ${fmtDataHora(e.avaliado_em)}${e.comentario ? `<br>💬 “${h(e.comentario)}”` : ''}</p>` : ''}
+    <div class="linha envio-acoes">
+      ${avaliar && e.status === 'pendente' && !meu ? `<button class="btn btn-primary btn-sm" data-acao-envio="aprovar">✔ Aprovar</button><button class="btn btn-danger btn-sm" data-acao-envio="recusar">✖ Recusar</button>` : ''}
+      ${meu && e.status === 'pendente' ? '<button class="btn btn-sm" data-acao-envio="cancelar">Cancelar envio</button>' : ''}
+      ${meu && e.status === 'recusado' ? '<button class="btn btn-sm" data-acao-envio="reenviar">↻ Enviar de novo</button>' : ''}
+    </div>
+  </article>`;
+}
+
+async function carregarMiniaturas(el, lista) {
+  for (const img of el.querySelectorAll('img[data-thumb]')) {
+    const e = lista.find((x) => x.id === img.closest('[data-envio]')?.dataset.envio);
+    if (!e) continue;
+    try { img.src = await db.urlArquivo(e.arquivos[img.dataset.thumb]); } catch { img.remove(); }
+  }
+}
+
+/** Liga os botões dos cards de envio. getLista() devolve a lista atual. */
+function ligarEnvios(el, getLista, recarregar) {
+  el.addEventListener('click', async (ev) => {
+    const card = ev.target.closest('[data-envio]'); if (!card) return;
+    const e = getLista().find((x) => x.id === card.dataset.envio); if (!e) return;
+    const arq = ev.target.closest('[data-arquivo]');
+    const acao = ev.target.closest('[data-acao-envio]')?.dataset.acaoEnvio;
+    try {
+      if (arq) return abrirArquivo(e.arquivos[arq.dataset.arquivo]);
+      if (acao === 'aprovar' || acao === 'recusar') { if (await avaliar(e, acao === 'aprovar')) await recarregar(); }
+      if (acao === 'cancelar' && await confirmar('Cancelar este envio?', 'O relatório e os arquivos serão apagados.', 'Cancelar envio', true)) {
+        await db.excluirEnvio(e.id); toast('Envio cancelado.'); await recarregar();
+      }
+      if (acao === 'reenviar') abrirFormEnvio({ tipo: e.tipo, item_id: e.item_id, nome: e.nome, nivel: e.nivel, aoEnviar: recarregar });
+    } catch (err) { erro(err); }
+  });
+}
+
+async function abrirArquivo(a) {
+  const url = await db.urlArquivo(a);
+  if (a.tipo?.startsWith('image/')) {
+    modal(`<h3>${h(a.nome)}</h3><img src="${h(url)}" alt="${h(a.nome)}" class="previa-img">
+      <div class="acoes"><a class="btn" href="${h(url)}" download="${h(a.nome)}" target="_blank" rel="noopener">⬇ Baixar</a><button class="btn btn-primary" data-fechar>Fechar</button></div>`);
+  } else {
+    const w = window.open(url, '_blank', 'noopener');
+    if (!w) { const l = document.createElement('a'); l.href = url; l.download = a.nome; l.click(); }
+  }
+}
+
+function avaliar(e, aprovar) {
+  return new Promise((ok) => {
+    const d = modal(`<h3>${aprovar ? '✔ Aprovar' : '✖ Recusar'} ${e.tipo === 'insignia' ? 'insígnia' : 'especialidade'}</h3>
+      <p class="muted"><b>${h(e.nome)}</b>${e.nivel ? ` (nível ${e.nivel})` : ''} · ${h(e.autor)}</p>
+      ${aprovar && e.item_id ? '<p class="aviso ok">O item vinculado será marcado como concluído na progressão.</p>' : ''}
+      <form id="m-aval"><label class="campo"><span>Comentário ${aprovar ? '(opcional)' : '(obrigatório)'}</span>
+        <textarea class="input" name="comentario" rows="3" ${aprovar ? '' : 'required'} placeholder="${aprovar ? 'Parabéns! Ótimo relatório.' : 'Explique o que precisa melhorar'}"></textarea></label>
+      <div class="acoes"><button type="button" class="btn" data-fechar>Voltar</button><button class="btn ${aprovar ? 'btn-primary' : 'btn-danger'}">${aprovar ? 'Aprovar' : 'Recusar'}</button></div></form>`);
+    let feito = false;
+    $('#m-aval', d).onsubmit = async (ev) => {
+      ev.preventDefault(); const b = ev.submitter; b.disabled = true;
+      try {
+        await db.avaliarEnvio(e.id, aprovar, new FormData(ev.target).get('comentario'));
+        feito = true; d.close(); toast(aprovar ? 'Aprovado! ✔' : 'Envio recusado.', aprovar ? 'ok' : '');
+      } catch (err) { erro(err); b.disabled = false; }
+    };
+    d.addEventListener('close', () => ok(feito), { once: true });
+  });
+}
+
+/** Clique em um item da progressão que exige envio. */
+function acaoItemEnvio(itemId, prog, redesenhar) {
+  const e = S.envios[itemId];
+  const item = itemPorId(itemId);
+  const depois = () => redesenhar(true);
+  if (e && (e.status === 'pendente' || prog[itemId] || (e.status === 'recusado' && !S.proprio))) {
+    const d = modal(`<h3>${ICO_TIPO[e.tipo]} ${h(e.nome)}</h3>${htmlEnvio(e, { avaliar: !S.proprio && ehAvaliador() })}
+      <div class="acoes"><button class="btn" data-fechar>Fechar</button></div>`, (dd) => carregarMiniaturas(dd, [e]));
+    ligarEnvios(d, () => [e], async () => { d.close(); await depois(); verificarNotificacoes(); });
+    return;
+  }
+  if (!S.proprio) return toast('O escoteiro precisa enviar o relatório antes.');
+  if (prog[itemId]) return;
+  const t = tipoEnvio(item);
+  abrirFormEnvio({ tipo: t === 'ambos' ? null : t, permitirAmbos: t === 'ambos', item_id: itemId, aoEnviar: depois });
+}
+
+function abrirFormEnvio({ tipo = 'especialidade', permitirAmbos = false, item_id = null, nome = '', nivel = null, aoEnviar } = {}) {
+  const mod = S.eu.modalidade || 'basica';
+  const item = item_id ? itemPorId(item_id) : null;
+  const tipoInicial = tipo || 'especialidade';
+  const escolheTipo = permitirAmbos || !item_id;
+  const opcoesItem = (t) => ITENS_COM_ENVIO
+    .filter((i) => itemVisivel(i, mod) && (i.tipo === t || i.tipo === 'ambos'))
+    .filter((i) => i.id === item_id || (!S.meuProgresso[i.id] && S.envios[i.id]?.status !== 'pendente'))
+    .map((i) => `<option value="${i.id}" ${i.id === item_id ? 'selected' : ''}>${h(i.bloco)} — ${h(i.esp ? 'especialidade que soma nas variáveis' : i.t.slice(0, 70))}</option>`).join('');
+  const d = modal(`<h3>📤 Enviar ${escolheTipo ? 'conquista' : NOME_TIPO[tipoInicial]}</h3>
+    ${item ? `<p class="aviso">🔗 <b>${h(item.bloco)}</b><br>${h(item.t)}</p>` : ''}
+    <form id="m-envio">
+      ${escolheTipo ? `<div class="campo"><span>Tipo</span><div class="segmentado" id="m-tipo">
+        <button type="button" data-v="especialidade" aria-pressed="${tipoInicial === 'especialidade'}">🎖️ Especialidade</button>
+        <button type="button" data-v="insignia" aria-pressed="${tipoInicial === 'insignia'}">🏅 Insígnia</button></div></div>` : ''}
+      <input type="hidden" name="tipo" value="${tipoInicial}">
+      <label class="campo"><span id="m-rotulo-nome">Qual ${tipoInicial === 'insignia' ? 'insígnia' : 'especialidade'}?</span>
+        <input class="input" name="nome" list="m-lista" required autocomplete="off" value="${h(nome)}" placeholder="Digite ou escolha da lista">
+        <datalist id="m-lista"></datalist></label>
+      <label class="campo" id="m-campo-nivel"><span>Nível</span><select class="input" name="nivel">
+        ${[1, 2, 3].map((n) => `<option value="${n}" ${(nivel || (item?.id.endsWith('ou') ? 2 : 1)) === n ? 'selected' : ''}>Nível ${n}</option>`).join('')}</select></label>
+      ${item_id ? `<input type="hidden" name="item_id" value="${item_id}">` : `<label class="campo"><span>Vincular a um item da progressão (opcional)</span>
+        <select class="input" name="item_id" id="m-item"></select><small>Ao ser aprovado, o item é marcado automaticamente.</small></label>`}
+      <label class="campo"><span>📎 Relatório e comprovantes *</span>
+        <input class="input" type="file" name="arquivos" id="m-arquivos" multiple required
+          accept="application/pdf,image/*,video/*,.doc,.docx,.odt,.txt,.rtf,.ppt,.pptx,.xls,.xlsx">
+        <small>PDF, fotos, vídeos ou documentos · até ${MAX_ARQUIVOS} arquivos de ${LIMITE_ARQUIVO_MB} MB.</small>
+        <div id="m-lista-arq" class="lista-arq"></div></label>
+      <label class="campo"><span>Resumo do que você fez (opcional)</span>
+        <textarea class="input" name="relatorio" rows="3" maxlength="2000" placeholder="Conte como conquistou, o que aprendeu…"></textarea></label>
+      <div class="acoes"><button type="button" class="btn" data-fechar>Cancelar</button><button class="btn btn-primary" id="m-enviar">📤 Enviar para o monitor</button></div>
+    </form>`);
+  const form = $('#m-envio', d);
+  const aplicarTipo = (t) => {
+    form.tipo.value = t;
+    $('#m-lista', d).innerHTML = (t === 'insignia' ? INSIGNIAS : ESPECIALIDADES).map((n) => `<option value="${h(n)}">`).join('');
+    $('#m-campo-nivel', d).hidden = t !== 'especialidade';
+    $('#m-rotulo-nome', d).textContent = `Qual ${t === 'insignia' ? 'insígnia' : 'especialidade'}?`;
+    const sel = $('#m-item', d);
+    if (sel) sel.innerHTML = '<option value="">— não vincular —</option>' + opcoesItem(t);
+  };
+  aplicarTipo(tipoInicial);
+  $('#m-tipo', d)?.addEventListener('click', (ev) => {
+    const b = ev.target.closest('button'); if (!b) return;
+    $('#m-tipo', d).querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    aplicarTipo(b.dataset.v);
+  });
+  $('#m-arquivos', d).addEventListener('change', (ev) => {
+    $('#m-lista-arq', d).innerHTML = Array.from(ev.target.files).map((f) => `<span class="${f.size > LIMITE_ARQUIVO_MB * 1048576 ? 'grande' : ''}">${icoArquivo(f.type)} ${h(f.name)} · ${fmtTamanho(f.size)}</span>`).join('');
+  });
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const b = $('#m-enviar', d); b.disabled = true; b.textContent = 'Enviando…';
+    try {
+      const f = new FormData(form);
+      await db.enviar({ tipo: f.get('tipo'), nome: f.get('nome'), nivel: f.get('nivel'), item_id: f.get('item_id') || null,
+        relatorio: f.get('relatorio'), arquivos: $('#m-arquivos', d).files });
+      d.close();
+      toast('Enviado! O monitor vai avaliar. 📤', 'ok');
+      await aoEnviar?.();
+    } catch (err) { erro(err); b.disabled = false; b.textContent = '📤 Enviar para o monitor'; }
+  };
+}
+
+/* ======================================== VIEW: ESPECIALIDADES / INSÍGNIAS */
+async function viewEnvios(el, tipo) {
+  const [lista, prog] = await Promise.all([db.listarEnvios({ userId: S.eu.id }), db.getProgresso(S.eu.id)]);
+  S.meuProgresso = prog; S.envios = mapaEnvios(lista); S.proprio = true;
+  const meus = lista.filter((e) => e.tipo === tipo);
+  const n = (st) => meus.filter((e) => e.status === st).length;
+  const ins = tipo === 'insignia';
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-titulo">
+        <div><h3 style="margin:0">${ins ? '🏅 Minhas insígnias' : '🎖️ Minhas especialidades'}</h3>
+          <span class="muted pequeno">${n('aprovado')} aprovada(s) · ${n('pendente')} aguardando · ${n('recusado')} recusada(s)</span></div>
+        <button class="btn btn-primary" id="btn-novo-envio">➕ Enviar ${ins ? 'insígnia' : 'especialidade'}</button>
+      </div>
+      <p class="muted pequeno" style="margin:0">Envie o relatório (PDF, fotos ou outros arquivos). O monitor da sua patrulha avalia e, se aprovar,
+        o item vinculado da progressão é marcado automaticamente.</p>
+    </div>
+    ${meus.length ? `<div class="pilha" style="margin-top:14px">${meus.map((e) => htmlEnvio(e)).join('')}</div>`
+      : `<div class="card vazio" style="margin-top:14px"><span class="grande">${ins ? '🏅' : '🎖️'}</span>Você ainda não enviou nenhuma ${ins ? 'insígnia' : 'especialidade'}.</div>`}`;
+  const recarregar = () => irPara(S.view);
+  $('#btn-novo-envio', el).onclick = () => abrirFormEnvio({ tipo, aoEnviar: recarregar });
+  ligarEnvios(el, () => meus, recarregar);
+  carregarMiniaturas(el, meus);
+}
+
+/* ===================================================== VIEW: AVALIAÇÕES */
+async function viewAvaliacoes(el) {
+  const todos = (await db.listarEnvios()).filter((e) => e.user_id !== S.eu.id);
+  const lista = todos.filter((e) => (S.filtroAval === 'pendente' ? e.status === 'pendente' : e.status !== 'pendente'));
+  const pend = todos.filter((e) => e.status === 'pendente').length;
+  const notif = 'Notification' in window ? Notification.permission : 'indisponivel';
+  el.innerHTML = `
+    ${notif === 'default' ? `<div class="card aviso-notif"><div><b>🔔 Receba um aviso quando chegar um envio</b><br><span class="muted pequeno">Ative as notificações deste aparelho.</span></div>
+      <button class="btn btn-primary btn-sm" id="btn-ativar-notif">Ativar notificações</button></div>` : ''}
+    <div class="card">
+      <h3 style="margin:0 0 .3rem">✅ Especialidades e insígnias enviadas</h3>
+      <p class="muted pequeno" style="margin:0">${S.eu.papel === 'chefe' ? 'Envios de todas as patrulhas.' : 'Envios dos membros da sua patrulha.'} Abra os arquivos, aprove ou recuse com um comentário.</p>
+      <div class="filtros" style="margin-bottom:0">
+        <button class="chip" data-f="pendente" aria-pressed="${S.filtroAval === 'pendente'}">⏳ Para avaliar (${pend})</button>
+        <button class="chip" data-f="avaliado" aria-pressed="${S.filtroAval !== 'pendente'}">Já avaliados (${todos.length - pend})</button>
+      </div>
+    </div>
+    ${lista.length ? `<div class="pilha" style="margin-top:14px">${lista.map((e) => htmlEnvio(e, { avaliar: true })).join('')}</div>`
+      : `<div class="card vazio" style="margin-top:14px"><span class="grande">${S.filtroAval === 'pendente' ? '🎉' : '📭'}</span>${S.filtroAval === 'pendente' ? 'Nada para avaliar agora.' : 'Nenhum envio avaliado ainda.'}</div>`}`;
+  el.querySelectorAll('[data-f]').forEach((b) => b.addEventListener('click', () => { S.filtroAval = b.dataset.f; irPara('avaliacoes'); }));
+  $('#btn-ativar-notif', el)?.addEventListener('click', async () => { await pedirPermissaoNotificacao(); irPara('avaliacoes'); });
+  ligarEnvios(el, () => lista, async () => { await verificarNotificacoes(); irPara('avaliacoes'); });
+  carregarMiniaturas(el, lista);
+}
+
+/* ====================================================== NOTIFICAÇÕES */
+const notif = { timer: null, cancelarRealtime: null, rodando: false, debounce: null };
+
+function iniciarNotificacoes() {
+  pararNotificacoes();
+  verificarNotificacoes();
+  notif.timer = setInterval(() => { if (document.visibilityState === 'visible') verificarNotificacoes(); }, 60 * 1000);
+  notif.cancelarRealtime = db.assinarEnvios(() => {
+    clearTimeout(notif.debounce);
+    notif.debounce = setTimeout(verificarNotificacoes, 800);
+  });
+}
+function pararNotificacoes() {
+  clearInterval(notif.timer); notif.timer = null;
+  notif.cancelarRealtime?.(); notif.cancelarRealtime = null;
+  S.pendentes = 0; atualizarBadge();
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.eu) verificarNotificacoes(); });
+
+function atualizarBadge() {
+  const b = $('#nav [data-view="avaliacoes"]');
+  if (b) {
+    b.querySelector('.nav-badge')?.remove();
+    if (S.pendentes) b.insertAdjacentHTML('beforeend', `<span class="nav-badge" aria-label="${S.pendentes} pendentes">${S.pendentes}</span>`);
+  }
+  $('#btn-menu')?.classList.toggle('tem-aviso', S.pendentes > 0);
+  try { S.pendentes ? navigator.setAppBadge?.(S.pendentes) : navigator.clearAppBadge?.(); } catch {}
+}
+
+async function notificarSistema(titulo, corpo, view) {
+  if (!('Notification' in window) || Notification.permission !== 'granted' || prefs.notificacoes === false) return;
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    const opts = { body: corpo, icon: './icons/icon-192.png', badge: './icons/icon-192.png', tag: 'envio-' + titulo + corpo, data: { view } };
+    if (reg) await reg.showNotification(titulo, opts); else new Notification(titulo, opts);
+  } catch {}
+}
+
+/** Compara os envios com o que já foi visto e avisa sobre novidades. */
+async function verificarNotificacoes() {
+  if (!S.eu || notif.rodando) return;
+  notif.rodando = true;
+  try {
+    const envios = await db.listarEnvios();
+    const avaliador = ehAvaliador();
+    const paraAvaliar = avaliador ? envios.filter((e) => e.status === 'pendente' && e.user_id !== S.eu.id) : [];
+    const meusAvaliados = envios.filter((e) => e.user_id === S.eu.id && e.status !== 'pendente');
+    S.pendentes = paraAvaliar.length; atualizarBadge();
+
+    const chave = `pe_vistos_${S.eu.id}`;
+    const primeiraVez = localStorage.getItem(chave) === null;
+    const vistos = new Set(JSON.parse(localStorage.getItem(chave) || '[]'));
+    const novosAval = paraAvaliar.filter((e) => !vistos.has(`${e.id}:pendente`));
+    const novosResult = meusAvaliados.filter((e) => !vistos.has(`${e.id}:${e.status}`));
+    [...paraAvaliar.map((e) => `${e.id}:pendente`), ...meusAvaliados.map((e) => `${e.id}:${e.status}`)].forEach((k) => vistos.add(k));
+    localStorage.setItem(chave, JSON.stringify([...vistos].slice(-500)));
+
+    if (primeiraVez) {
+      if (paraAvaliar.length) toast(`🔔 ${paraAvaliar.length} envio(s) aguardando sua avaliação.`, 'ok');
+      return;
+    }
+    novosAval.slice(0, 3).forEach((e) => {
+      const tit = `${ICO_TIPO[e.tipo]} Nova ${e.tipo === 'insignia' ? 'insígnia' : 'especialidade'} para avaliar`;
+      toast(`${tit}: ${e.nome} – ${e.autor}`, 'ok');
+      notificarSistema(tit, `${e.autor} enviou: ${e.nome}${e.nivel ? ` (nível ${e.nivel})` : ''}`, 'avaliacoes');
+    });
+    if (novosAval.length > 3) notificarSistema('🔔 Novos envios', `Mais ${novosAval.length - 3} envio(s) para avaliar`, 'avaliacoes');
+    novosResult.slice(0, 3).forEach((e) => {
+      const ok = e.status === 'aprovado';
+      const tit = ok ? `✔ ${e.tipo === 'insignia' ? 'Insígnia aprovada' : 'Especialidade aprovada'}!` : `✖ ${e.tipo === 'insignia' ? 'Insígnia recusada' : 'Especialidade recusada'}`;
+      toast(`${tit} ${e.nome}`, ok ? 'ok' : 'erro');
+      notificarSistema(tit, `${e.nome}${e.comentario ? ` — “${e.comentario}”` : ''}`, e.tipo === 'insignia' ? 'insignias' : 'especialidades');
+    });
+    if ((novosAval.length && S.view === 'avaliacoes') || (novosResult.length && ['especialidades', 'insignias', 'progresso'].includes(S.view))) {
+      if (!document.querySelector('#modal[open]')) irPara(S.view);
+    }
+  } catch (e) { console.warn('notificações:', e.message); }
+  finally { notif.rodando = false; }
+}
+
+// clique na notificação do sistema → abre a tela certa
+navigator.serviceWorker?.addEventListener('message', (e) => {
+  if (e.data?.tipo === 'ABRIR' && S.eu && VIEWS[e.data.view] && (!VIEWS[e.data.view].se || VIEWS[e.data.view].se())) irPara(e.data.view);
+});
 
 /* ========================================================= VIEW: PATRULHAS */
 async function viewPatrulhas(el) {
@@ -601,6 +988,7 @@ async function instalar() {
 /* ================================================================== sair */
 async function sair() {
   if (!(await confirmar('Sair da conta?', 'Seus dados continuam salvos.', 'Sair'))) return;
+  pararNotificacoes();
   await db.sair(); S.eu = null; S.view = 'progresso'; S.monitor = { patrulhaId: null, alvo: null, progresso: {} };
   $('#aba-entrar').click(); mostrar('tela-auth');
 }
@@ -628,6 +1016,8 @@ async function iniciar() {
     await db.init();
     S.eu = await db.sessao();
   } catch (e) { erro(e); S.eu = null; }
+  const abrir = new URLSearchParams(location.search).get('abrir');
+  if (abrir && VIEWS[abrir]) S.view = abrir;
   if (S.eu) await entrarNoApp(); else mostrar('tela-auth');
 }
 

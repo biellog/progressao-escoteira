@@ -5,7 +5,7 @@
    Os DADOS do usuário não ficam aqui (ficam no localStorage/Supabase),
    por isso trocar o cache NUNCA apaga dados.
    ===================================================================== */
-const VERSAO = '1.0.0';
+const VERSAO = '1.1.0';
 const BUILD = '__BUILD__';
 const CACHE = `pe-app-${VERSAO}-${BUILD}`;
 const CACHE_EXTERNO = 'pe-externo';
@@ -79,8 +79,13 @@ self.addEventListener('fetch', (e) => {
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   e.waitUntil((async () => {
+    const view = e.notification.data?.view;
     const janelas = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    if (janelas.length) return janelas[0].focus();
-    return self.clients.openWindow('./');
+    if (janelas.length) {
+      const j = await janelas[0].focus();
+      if (view) j.postMessage({ tipo: 'ABRIR', view });
+      return j;
+    }
+    return self.clients.openWindow(view ? `./?abrir=${view}` : './');
   })());
 });

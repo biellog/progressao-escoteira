@@ -1,9 +1,10 @@
 {
-  "versao": "1.0.0",
-  "data": "2026-11-07",
+  "versao": "1.1.0",
+  "data": "2026-11-10",
   "novidades": [
-    "Primeira versão do aplicativo",
-    "Progressão completa do Ramo Escoteiro 2026",
-    "Painel do Monitor e gestão de patrulhas para chefes"
+    "Especialidades e Insígnias: envie o relatório (PDF, fotos ou outros arquivos) para o monitor avaliar",
+    "Itens de especialidade/insígnia só são marcados após a aprovação do monitor",
+    "Nova tela Avaliações para o monitor e o chefe, com contador de pendentes",
+    "Notificações: o monitor é avisado quando chega um envio e o escoteiro quando é avaliado"
   ]
 }

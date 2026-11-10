@@ -5,6 +5,7 @@
    As duas expõem exatamente a mesma API assíncrona.
    ===================================================================== */
 import { CONFIG } from './config.js';
+import { itemPorId, tipoEnvio } from './data.js';
 
 const ALFABETO = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export function gerarCodigo(n = 6) {
@@ -18,10 +19,58 @@ const normCodigo = (c) => limpa(c).toUpperCase();
 class ErroApp extends Error {}
 export { ErroApp };
 
+/* ------------------------------------------------- envios (validação) */
+export const LIMITE_ARQUIVO_MB = 10;
+export const MAX_ARQUIVOS = 5;
+const exigeEnvio = (itemId) => !!tipoEnvio(itemPorId(itemId));
+const nomeSeguro = (n) => String(n).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w.\-]+/g, '_').slice(-80);
+
+function validarEnvio(d) {
+  if (!['especialidade', 'insignia'].includes(d.tipo)) throw new ErroApp('Tipo inválido.');
+  if (!limpa(d.nome)) throw new ErroApp(d.tipo === 'insignia' ? 'Informe qual insígnia.' : 'Informe qual especialidade.');
+  const arqs = Array.from(d.arquivos || []);
+  if (!arqs.length) throw new ErroApp('Anexe o relatório (PDF, imagem ou outro arquivo).');
+  if (arqs.length > MAX_ARQUIVOS) throw new ErroApp(`Envie no máximo ${MAX_ARQUIVOS} arquivos.`);
+  const grande = arqs.find((a) => a.size > LIMITE_ARQUIVO_MB * 1024 * 1024);
+  if (grande) throw new ErroApp(`"${grande.name}" passa de ${LIMITE_ARQUIVO_MB} MB.`);
+  if (d.item_id) {
+    const t = tipoEnvio(itemPorId(d.item_id));
+    if (!t || (t !== 'ambos' && t !== d.tipo)) throw new ErroApp('Esse item da progressão não aceita este tipo de envio.');
+  }
+  return {
+    tipo: d.tipo, nome: limpa(d.nome), item_id: d.item_id || null, relatorio: limpa(d.relatorio),
+    nivel: d.tipo === 'especialidade' && d.nivel ? Number(d.nivel) : null, arquivos: arqs,
+  };
+}
+
+/* ------------------------------------------- arquivos locais (IndexedDB) */
+const idb = {
+  _db: null,
+  abrir() {
+    if (this._db) return this._db;
+    this._db = new Promise((ok, falha) => {
+      const r = indexedDB.open('pe_arquivos', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('arquivos');
+      r.onsuccess = () => ok(r.result); r.onerror = () => falha(r.error);
+    });
+    return this._db;
+  },
+  async _op(modo, fn) {
+    const db = await this.abrir();
+    return new Promise((ok, falha) => {
+      const tx = db.transaction('arquivos', modo); const req = fn(tx.objectStore('arquivos'));
+      tx.oncomplete = () => ok(req?.result); tx.onerror = () => falha(tx.error);
+    });
+  },
+  salvar(chave, blob) { return this._op('readwrite', (s) => s.put(blob, chave)); },
+  ler(chave) { return this._op('readonly', (s) => s.get(chave)); },
+  apagar(chave) { return this._op('readwrite', (s) => s.delete(chave)); },
+};
+
 /* --------------------------------------------------------------- LOCAL */
 const CHAVE_DB = 'pe_db';
 const CHAVE_SESSAO = 'pe_sessao';
-const SCHEMA_ATUAL = 2;
+const SCHEMA_ATUAL = 3;
 
 async function hash(senha, salt) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + senha));
@@ -32,6 +81,7 @@ async function hash(senha, salt) {
 const MIGRACOES = {
   1: (db) => { db.usuarios ??= []; db.patrulhas ??= []; db.progresso ??= {}; },
   2: (db) => { db.usuarios.forEach((u) => { u.modalidade ??= 'basica'; }); },
+  3: (db) => { db.envios ??= []; },
 };
 
 class LocalDB {
@@ -148,7 +198,9 @@ class LocalDB {
     const db = this._ler(); const eu = this._eu(db);
     if (!this._podeVer(db, userId)) throw new ErroApp('Sem permissão.');
     db.progresso[userId] ??= {};
-    if (data) db.progresso[userId][itemId] = { data, por: eu.id === userId ? null : eu.nome };
+    if (data && exigeEnvio(itemId) && !db.progresso[userId][itemId]) throw new ErroApp('Este item precisa do envio do relatório e da aprovação do monitor.');
+    const ant = db.progresso[userId][itemId];
+    if (data) db.progresso[userId][itemId] = { data, por: eu.id === userId ? (ant?.por ?? null) : eu.nome };
     else delete db.progresso[userId][itemId];
     this._gravar(db);
   }
@@ -200,6 +252,58 @@ class LocalDB {
     db.usuarios.forEach((u) => { if (u.patrulha_id === patrulhaId) u.patrulha_id = null; });
     db.patrulhas = db.patrulhas.filter((p) => p.id !== patrulhaId); this._gravar(db);
   }
+
+  /* Especialidades / Insígnias */
+  async enviar(dados) {
+    const d = validarEnvio(dados);
+    const db = this._ler(); const eu = this._eu(db);
+    const id = crypto.randomUUID();
+    const arquivos = [];
+    for (const [i, a] of d.arquivos.entries()) {
+      const chave = `${id}/${i}`;
+      await idb.salvar(chave, a);
+      arquivos.push({ nome: a.name, tipo: a.type, tamanho: a.size, chave });
+    }
+    const envio = { ...d, id, user_id: eu.id, arquivos, status: 'pendente', comentario: null, avaliado_por_nome: null, criado_em: new Date().toISOString(), avaliado_em: null };
+    db.envios.push(envio); this._gravar(db);
+    return envio;
+  }
+  async listarEnvios({ userId, status } = {}) {
+    const db = this._ler(); this._eu(db);
+    const nomes = Object.fromEntries(db.usuarios.map((u) => [u.id, u.nome]));
+    return db.envios
+      .filter((e) => this._podeVer(db, e.user_id) && (!userId || e.user_id === userId) && (!status || e.status === status))
+      .map((e) => ({ ...e, autor: nomes[e.user_id] || '—' }))
+      .sort((a, b) => b.criado_em.localeCompare(a.criado_em));
+  }
+  async avaliarEnvio(id, aprovado, comentario) {
+    const db = this._ler(); const eu = this._eu(db);
+    const e = db.envios.find((x) => x.id === id);
+    if (!e) throw new ErroApp('Envio não encontrado.');
+    const autor = db.usuarios.find((u) => u.id === e.user_id);
+    const pt = autor && db.patrulhas.find((p) => p.id === autor.patrulha_id);
+    if (!(eu.papel === 'chefe' || (pt?.monitor_id === eu.id && e.user_id !== eu.id))) throw new ErroApp('Apenas o monitor da patrulha ou um chefe pode avaliar.');
+    Object.assign(e, { status: aprovado ? 'aprovado' : 'recusado', comentario: limpa(comentario) || null, avaliado_por: eu.id, avaliado_por_nome: eu.nome, avaliado_em: new Date().toISOString() });
+    if (e.item_id) {
+      db.progresso[e.user_id] ??= {};
+      if (aprovado) db.progresso[e.user_id][e.item_id] = { data: new Date().toLocaleDateString('sv-SE'), por: eu.nome };
+      else delete db.progresso[e.user_id][e.item_id];
+    }
+    this._gravar(db);
+  }
+  async excluirEnvio(id) {
+    const db = this._ler(); const eu = this._eu(db);
+    const e = db.envios.find((x) => x.id === id);
+    if (!e || e.user_id !== eu.id || e.status !== 'pendente') throw new ErroApp('Só é possível cancelar envios seus que ainda não foram avaliados.');
+    await Promise.all(e.arquivos.map((a) => idb.apagar(a.chave).catch(() => {})));
+    db.envios = db.envios.filter((x) => x.id !== id); this._gravar(db);
+  }
+  async urlArquivo(arq) {
+    const blob = await idb.ler(arq.chave);
+    if (!blob) throw new ErroApp('Arquivo não encontrado neste aparelho.');
+    return URL.createObjectURL(blob);
+  }
+  assinarEnvios() { return () => {}; }
 
   /* Backup */
   async exportar() { return { app: 'progressao-escoteira', exportado_em: new Date().toISOString(), db: this._ler() }; }
@@ -328,6 +432,54 @@ class NuvemDB {
   async novoCodigo(patrulhaId) { return this._ok(await this.sb.rpc('novo_codigo', { p_patrulha: patrulhaId })); }
   async renomearPatrulha(patrulhaId, nome) { this._ok(await this.sb.from('patrulhas').update({ nome: limpa(nome) }).eq('id', patrulhaId)); }
   async excluirPatrulha(patrulhaId) { this._ok(await this.sb.from('patrulhas').delete().eq('id', patrulhaId)); }
+  async enviar(dados) {
+    const d = validarEnvio(dados);
+    const uid = await this._uid();
+    const id = crypto.randomUUID();
+    const arquivos = [];
+    try {
+      for (const [i, a] of d.arquivos.entries()) {
+        const caminho = `${uid}/${id}/${i}-${nomeSeguro(a.name)}`;
+        this._ok(await this.sb.storage.from('relatorios').upload(caminho, a, { contentType: a.type || 'application/octet-stream' }));
+        arquivos.push({ nome: a.name, tipo: a.type, tamanho: a.size, caminho });
+      }
+      const { arquivos: _, ...linha } = d;
+      return this._ok(await this.sb.from('envios').insert({ ...linha, id, user_id: uid, arquivos }).select().single());
+    } catch (e) {
+      if (arquivos.length) await this.sb.storage.from('relatorios').remove(arquivos.map((a) => a.caminho));
+      throw e;
+    }
+  }
+  async listarEnvios({ userId, status } = {}) {
+    let q = this.sb.from('envios').select('*').order('criado_em', { ascending: false });
+    if (userId) q = q.eq('user_id', userId);
+    if (status) q = q.eq('status', status);
+    const rows = this._ok(await q);
+    const ids = [...new Set(rows.map((r) => r.user_id))];
+    const nomes = {};
+    if (ids.length) this._ok(await this.sb.from('perfis').select('id,nome').in('id', ids)).forEach((p) => { nomes[p.id] = p.nome; });
+    return rows.map((r) => ({ ...r, autor: nomes[r.user_id] || '—' }));
+  }
+  async avaliarEnvio(id, aprovado, comentario) {
+    this._ok(await this.sb.rpc('avaliar_envio', { p_envio: id, p_aprovado: aprovado, p_comentario: comentario || '' }));
+  }
+  async excluirEnvio(id) {
+    const e = this._ok(await this.sb.from('envios').select('arquivos,status').eq('id', id).single());
+    if (e.status !== 'pendente') throw new ErroApp('Este envio já foi avaliado.');
+    this._ok(await this.sb.from('envios').delete().eq('id', id));
+    if (e.arquivos?.length) await this.sb.storage.from('relatorios').remove(e.arquivos.map((a) => a.caminho));
+  }
+  async urlArquivo(arq) {
+    return this._ok(await this.sb.storage.from('relatorios').createSignedUrl(arq.caminho, 3600)).signedUrl;
+  }
+  /** Avisa em tempo real quando um envio é criado/avaliado. Retorna função para cancelar. */
+  assinarEnvios(aoMudar) {
+    const canal = this.sb.channel('envios-' + Math.random().toString(36).slice(2))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'envios' }, () => aoMudar())
+      .subscribe();
+    return () => this.sb.removeChannel(canal);
+  }
+
   async exportar() {
     const eu = await this._perfilDe(await this._uid());
     return { app: 'progressao-escoteira', exportado_em: new Date().toISOString(), perfil: eu, progresso: await this.getProgresso(eu.id) };

@@ -72,6 +72,28 @@ Sem configurar nada, o app roda em **modo local**: os dados ficam só no aparelh
 - **Escoteiro**: cria a conta com o **código de entrada da patrulha** (o chefe vê e compartilha esse código).
 - **Monitor**: o chefe escolhe um membro da patrulha como monitor na tela *Patrulhas*.
 
+## 2.1 Especialidades e Insígnias (versão 1.1)
+
+- Itens da progressão que pedem **especialidade** ou **insígnia** (as linhas ★, as alternativas "OU" e os itens
+  "Conquistar…") **não podem ser marcados direto**: o escoteiro envia o relatório (PDF, fotos, vídeos ou
+  documentos – até 5 arquivos de 10 MB) e o item fica "⏳ aguardando avaliação".
+- O **monitor** da patrulha (ou um chefe) recebe a notificação, abre os arquivos na tela **Avaliações** e
+  aprova ou recusa com um comentário. Ao aprovar, o item é marcado automaticamente na progressão.
+- Telas **Especialidades** e **Insígnias**: histórico de envios; também dá para enviar conquistas sem vínculo com um item.
+- O monitor não avalia os próprios envios — esses vão para o chefe.
+
+**Quem já tinha o banco criado** precisa rodar uma vez no Supabase → SQL Editor o arquivo
+[`supabase/atualizacao-1.1.sql`](supabase/atualizacao-1.1.sql) (cria a tabela `envios`, o armazenamento
+privado `relatorios` para os arquivos e as regras de segurança). Instalações novas: o `schema.sql` já inclui tudo.
+
+**Notificações:** chegam como aviso no app, número vermelho no menu (e no ícone do app instalado) e
+notificação do sistema (ative em *Configurações → Notificações do sistema*). Elas são verificadas em tempo
+real enquanto o app está aberto ou em segundo plano e sempre que ele é aberto. Com o app totalmente fechado,
+o aviso aparece na próxima vez que ele for aberto.
+
+> No **modo local** os arquivos ficam só no aparelho, então o monitor só vê envios feitos no mesmo aparelho.
+> Para uso real da patrulha, use o modo nuvem (Supabase).
+
 ## 3. Lançar uma atualização
 
 ```bash

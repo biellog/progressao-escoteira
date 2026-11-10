@@ -496,3 +496,68 @@ export function resumoGeral(progresso, modalidade) {
   const pct = Math.round((somaPct + (acOk / ACOLHIDA_ITENS.length) * 100) / (blocos + 1));
   return { acOk, acTotal: ACOLHIDA_ITENS.length, blocos, completos, pct, porEixo };
 }
+
+/* =====================================================================
+   Especialidades e Insígnias (envio de relatório + avaliação do monitor)
+   ===================================================================== */
+
+/** Que tipo de envio um item exige: 'especialidade' | 'insignia' | 'ambos' | null */
+export function tipoEnvio(item) {
+  if (!item) return null;
+  const t = item.t || '';
+  const temIns = /ins[ií]gnia/i.test(t), temEsp = /especialidade/i.test(t);
+  if (item.esp) return 'especialidade';
+  if (item.id?.endsWith('ou') || /^Conquistar/i.test(t)) {
+    if (temIns && temEsp) return 'ambos';
+    if (temIns) return 'insignia';
+    return 'especialidade';
+  }
+  return null;
+}
+
+/** Todos os itens da progressão que exigem envio, com o bloco a que pertencem. */
+export const ITENS_COM_ENVIO = EIXOS.flatMap((e) => e.blocos.flatMap((b) =>
+  [...b.fixas, ...b.variaveis, ...(b.ou ? [b.ou] : [])]
+    .filter((i) => tipoEnvio(i))
+    .map((i) => ({ ...i, tipo: tipoEnvio(i), bloco: `Eixo ${e.numero} · Bloco ${b.numero} – ${b.titulo}` }))));
+
+export function itemPorId(id) {
+  if (id?.startsWith('ac')) return ACOLHIDA_ITENS.find((i) => i.id === id);
+  for (const e of EIXOS) for (const b of e.blocos) {
+    const i = [...b.fixas, ...b.variaveis, ...(b.ou ? [b.ou] : [])].find((x) => x.id === id);
+    if (i) return { ...i, bloco: `Eixo ${e.numero} · Bloco ${b.numero} – ${b.titulo}` };
+  }
+  return null;
+}
+
+const separaLista = (txt) => txt.replace(/\.$/, '').split(/,\s*|\s+e\s+|\s+ou\s+/).map((s) => s.trim()).filter(Boolean);
+
+const ESP_EXTRAS = [
+  'Administração', 'Educação Financeira', 'Empreendedorismo', 'Oratória', 'Reparos Domésticos', 'Arte Digital', 'Artes Visuais',
+  'Artesanato', 'Comédia', 'Costura e Estilismo', 'Encadernação', 'Fotografia', 'Grafite', 'HQ', 'Maquete', 'Pintura',
+  'Plastimodelismo', 'Propaganda e Marketing', 'Robótica', 'Videomaker', 'Horticultura', 'Meteorologia', 'Botânica',
+  'Oceanologia', 'Zoologia', 'Acampamento', 'Excursões', 'Montanhismo', 'Pioneiria', 'Sobrevivência', 'Defesa Civil',
+  'Inclusão', 'Libras', 'Brasilidades', 'Genealogia', 'Informações Turísticas', 'Tradições dos Povos Originários',
+  'Escotismo Mundial', 'Anatomia Humana', 'Prevenção em Saúde', 'Primeiros Socorros', 'Yoga', 'Nutrição',
+  'Prevenção aos Vícios', 'Prevenção ao Bullying',
+];
+const ESP_JUNTAS = ['Arquitetura e Urbanismo', 'Segurança e Emergência Náutica', 'Jardinagem e Paisagismo', 'Animais Venenosos e Peçonhentos',
+  'Paz e Justiça', 'Mágica e Ilusionismo', 'Costura e Estilismo', 'Propaganda e Marketing', 'Vendas', 'Web Design', 'Agricultura', 'Aquicultura', 'Energia'];
+
+/** Lista de especialidades citadas no documento (para sugestões no formulário). */
+export const ESPECIALIDADES = (() => {
+  const nomes = new Set(ESP_EXTRAS);
+  ITENS_COM_ENVIO.filter((i) => i.esp).forEach((i) => {
+    let txt = i.t.split(': ').slice(1).join(': ');
+    ESP_JUNTAS.forEach((j) => { if (txt.includes(j)) { nomes.add(j); txt = txt.replace(j, ''); } });
+    separaLista(txt).forEach((n) => { if (n.length > 1) nomes.add(n); });
+  });
+  return [...nomes].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+})();
+
+export const INSIGNIAS = [
+  'Insígnia do Aprender', 'Insígnia da Modalidade do Mar (Grumete)', 'Insígnia da Modalidade do Ar (Aviador)',
+  'Insígnia Reduzir, Reciclar e Reutilizar', 'Insígnia Escoteiros pela Energia Solar', 'Insígnia Campeões da Natureza',
+  'Insígnia Mensageiros da Paz', 'Insígnia Ação Comunitária', 'Insígnia da Lusofonia', 'Insígnia do Cone Sul',
+  'Insígnia Diálogos pela Paz', 'Insígnia Diálogo Inter-religioso',
+].sort((a, b) => a.localeCompare(b, 'pt-BR'));

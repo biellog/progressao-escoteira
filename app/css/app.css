@@ -328,3 +328,49 @@ dialog.modal .acoes { display: flex; gap: .6rem; justify-content: flex-end; marg
 @keyframes gira { to { transform: rotate(360deg); } }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ------------------------------------- especialidades / insígnias (1.1) */
+textarea.input { min-height: 90px; resize: vertical; line-height: 1.45; }
+input[type="file"].input { padding: .55rem; cursor: pointer; }
+.nav button { position: relative; }
+.nav-badge { margin-left: auto; min-width: 24px; height: 24px; padding: 0 7px; border-radius: 99px; background: var(--danger); color: #fff; font-size: .78rem; font-weight: 800; display: grid; place-items: center; }
+.btn-menu.tem-aviso { position: relative; }
+.btn-menu.tem-aviso::after { content: ''; position: absolute; top: 7px; right: 7px; width: 10px; height: 10px; border-radius: 50%; background: var(--danger); border: 2px solid var(--surface); }
+.badge.pendente { background: rgba(245,183,79,.16); color: var(--accent); }
+.badge.recusado { background: var(--danger-soft); color: var(--danger); }
+
+.item-envio { grid-column: 2 / -1; margin-top: -2px; }
+.envio-status { display: inline-flex; align-items: center; gap: .35rem; min-height: 32px; padding: .2rem .7rem; border-radius: 8px; font-size: .82rem; font-weight: 600;
+  border: 1px dashed var(--border); background: var(--surface); color: var(--text-2); cursor: pointer; text-align: left; }
+span.envio-status { cursor: default; }
+.envio-status:hover { border-color: var(--primary); color: var(--text); }
+.envio-status.pendente { border-style: solid; border-color: color-mix(in srgb, var(--accent) 50%, transparent); color: var(--accent); }
+.envio-status.recusado { border-style: solid; border-color: color-mix(in srgb, var(--danger) 50%, transparent); color: var(--danger); }
+.envio-status.ok { border-style: solid; border-color: transparent; background: var(--primary-soft); color: var(--primary); }
+@media (max-width: 560px) { .item-envio { grid-column: 1 / -1; } }
+
+.envio { padding: 16px; }
+.envio-topo { display: flex; gap: .75rem; align-items: flex-start; }
+.envio-ico { font-size: 1.6rem; width: 2.6rem; height: 2.6rem; display: grid; place-items: center; border-radius: 10px; background: var(--surface-2); flex: none; }
+.envio-titulo { flex: 1; min-width: 0; }
+.envio-titulo > b { display: block; font-size: 1.05rem; }
+.envio-item, .envio-relatorio { margin: .7rem 0 0; font-size: .9rem; padding: .6rem .75rem; border-radius: 10px; background: var(--bg-2); }
+.envio-relatorio { white-space: pre-wrap; }
+.envio-avaliacao { margin: .7rem 0 0; font-size: .88rem; padding: .6rem .75rem; border-radius: 10px; }
+.envio-avaliacao.ok { background: var(--primary-soft); color: var(--primary); }
+.envio-avaliacao.recusado { background: var(--danger-soft); color: var(--danger); }
+.envio-acoes:not(:empty) { margin-top: .8rem; }
+.arquivos { display: flex; flex-wrap: wrap; gap: 8px; margin-top: .7rem; }
+.arquivo { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; column-gap: .55rem; align-items: center; text-align: left;
+  max-width: 260px; padding: 6px 10px 6px 6px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); cursor: pointer; }
+.arquivo:hover { border-color: var(--primary); }
+.arquivo img, .arquivo .arq-ico { grid-row: span 2; width: 44px; height: 44px; border-radius: 8px; object-fit: cover; display: grid; place-items: center; font-size: 1.5rem; background: var(--bg-2); }
+.arq-nome { font-size: .85rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arq-tam { font-size: .75rem; color: var(--text-3); }
+.lista-arq { display: grid; gap: 4px; font-size: .85rem; color: var(--text-2); }
+.lista-arq .grande { color: var(--danger); }
+.previa-img { display: block; max-width: 100%; max-height: 65vh; margin: 0 auto; border-radius: 10px; }
+dialog.modal { max-height: calc(100dvh - 32px); overflow-y: auto; }
+dialog.modal:has(.envio) { width: min(560px, calc(100vw - 32px)); }
+dialog.modal .envio { border: 0; padding: 0; background: transparent; }
+.aviso-notif { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 14px; border-color: color-mix(in srgb, var(--primary) 45%, transparent); }
